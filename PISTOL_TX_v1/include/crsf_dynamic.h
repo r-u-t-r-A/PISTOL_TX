@@ -93,4 +93,22 @@ const char *dynamic_field_type_name(uint8_t type);
 
 void dynamic_param_send_value(uint8_t device_id, dynamic_field_t *field);
 
+/* ELRS command status bytes in CRSF 0x2D (see elrsV3.lua fieldCommandSave) */
+#define CRSF_CMD_STATUS_START    1
+#define CRSF_CMD_STATUS_CONFIRM  4
+#define CRSF_CMD_STATUS_CANCEL   5
+#define CRSF_CMD_STATUS_QUERY    6
+
+uint8_t dynamic_param_command_tx_byte(const dynamic_field_t *field);
+void dynamic_param_send_command(uint8_t device_id, uint8_t field_id, uint8_t status_byte);
+
+void dynamic_command_popup_start(uint8_t field_id, uint8_t timeout_units);
+void dynamic_command_popup_clear(void);
+uint8_t dynamic_command_popup_active(void);
+uint8_t dynamic_command_popup_field_id(void);
+uint8_t dynamic_command_popup_tick(unsigned long now, uint8_t device_id);
+
+extern uint8_t dynamic_menu_dirty;
+uint8_t dynamic_menu_take_dirty(void);
+
 #endif // CRSF_DYNAMIC_H

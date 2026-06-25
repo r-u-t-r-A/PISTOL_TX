@@ -145,6 +145,88 @@ uint8_t dynamic_field_compact_display(const dynamic_field_t *field) {
         || field_is_telemetry_ratio(field->name);
 }
 
+uint8_t dynamic_menu_dirty = 0;
+
+static dynamic_param_manager_t *cmd_popup_manager;
+
+typedef struct {
+    uint8_t field_id;
+    uint32_t next_poll_ms;
+    uint8_t active;
+} dynamic_command_popup_t;
+
+static dynamic_command_popup_t cmd_popup;
+
+extern void dynamic_param_send_command(uint8_t device_id, uint8_t field_id, uint8_t status_byte);
+
+uint8_t dynamic_menu_take_dirty(void) {
+    if (!dynamic_menu_dirty) {
+        return 0;
+    }
+    dynamic_menu_dirty = 0;
+    return 1;
+}
+
+void dynamic_command_popup_start(uint8_t field_id, uint8_t timeout_units) {
+    cmd_popup.field_id = field_id;
+    cmd_popup.active = 1;
+    cmd_popup.next_poll_ms = millis() + (timeout_units ? (uint32_t)timeout_units * 10UL : 100UL);
+}
+
+void dynamic_command_popup_clear(void) {
+    cmd_popup.active = 0;
+    cmd_popup.field_id = 0;
+}
+
+uint8_t dynamic_command_popup_active(void) {
+    return cmd_popup.active;
+}
+
+uint8_t dynamic_command_popup_field_id(void) {
+    return cmd_popup.field_id;
+}
+
+uint8_t dynamic_command_popup_tick(unsigned long now, uint8_t device_id) {
+    if (!cmd_popup.active || !cmd_popup_manager) {
+        return 0;
+    }
+
+    dynamic_field_t *field = dynamic_get_field_by_id(cmd_popup_manager, cmd_popup.field_id);
+    if (!field || field->type != CRSF_COMMAND) {
+        dynamic_command_popup_clear();
+        return 1;
+    }
+
+    if (field->value == 0) {
+        dynamic_command_popup_clear();
+        return 1;
+    }
+
+    if (field->value == 3) {
+        return 0;
+    }
+
+    if (now >= cmd_popup.next_poll_ms) {
+        dynamic_param_send_command(device_id, cmd_popup.field_id, CRSF_CMD_STATUS_QUERY);
+        cmd_popup.next_poll_ms = now + (field->maxlen ? (uint32_t)field->maxlen * 10UL : 100UL);
+    }
+
+    return 0;
+}
+
+uint8_t dynamic_param_command_tx_byte(const dynamic_field_t *field) {
+    if (!field || field->type != CRSF_COMMAND) {
+        return 0;
+    }
+    if (field->value == 3) {
+        return CRSF_CMD_STATUS_CONFIRM;
+    }
+    if (field->value == 0) {
+        return CRSF_CMD_STATUS_START;
+    }
+    return 0;
+}
+
 static void chop_telemetry_ratio_label(char *label) {
     if (!label || !label[0]) {
         return;
@@ -355,6 +437,28 @@ static void field_text_sel_load(dynamic_field_t *field, const uint8_t *data,
     }
 }
 
+static void field_command_load(dynamic_field_t *field, const uint8_t *data,
+                               uint16_t offset, uint16_t len) {
+    if (!field || offset >= len) {
+        return;
+    }
+    uint8_t new_status = data[offset];
+    if (cmd_popup.active && field->id == cmd_popup.field_id
+        && new_status == 0 && field->value == CRSF_CMD_STATUS_START) {
+        if (offset + 1 < len) {
+            field->maxlen = data[offset + 1];
+        }
+        return;
+    }
+    field->value = new_status;
+    if (offset + 1 < len) {
+        field->maxlen = data[offset + 1];
+        offset += 2;
+        extract_cstring(data, offset, len, field->options_blob,
+                        sizeof(field->options_blob));
+    }
+}
+
 static void field_string_load(dynamic_field_t *field, const uint8_t *data,
                               uint16_t offset, uint16_t len) {
     char value[32];
@@ -398,6 +502,12 @@ static uint8_t parse_field_payload(dynamic_param_manager_t *manager, uint8_t fie
 
     dynamic_field_t *field = &manager->fields[field_id];
     if (field->loaded) {
+        if (field->type == CRSF_COMMAND) {
+            uint16_t cmd_offset = extract_cstring(data, 2, len, field->name, sizeof(field->name));
+            field_command_load(field, data, cmd_offset, len);
+            dynamic_menu_dirty = 1;
+            return 1;
+        }
         return 1;
     }
     memset(field, 0, sizeof(*field));
@@ -431,6 +541,7 @@ static uint8_t parse_field_payload(dynamic_param_manager_t *manager, uint8_t fie
     case CRSF_FOLDER:
         break;
     case CRSF_COMMAND:
+        field_command_load(field, data, offset, len);
         break;
     default:
         return 0;
@@ -478,6 +589,7 @@ void dynamic_param_init(dynamic_param_manager_t *manager, uint16_t max_fields) {
     manager->fields = NULL;
     manager->expect_chunks_remain = -1;
     manager->pending_field_id = PARAM_PENDING_NONE;
+    cmd_popup_manager = manager;
 }
 
 void dynamic_param_cleanup(dynamic_param_manager_t *manager) {
@@ -570,7 +682,8 @@ uint8_t dynamic_param_parse_message(dynamic_param_manager_t *manager,
     if (manager->pending_field_id != PARAM_PENDING_NONE &&
         field_id != manager->pending_field_id) {
         if (field_id > 0 && field_id <= manager->fields_count &&
-            manager->fields[field_id].loaded) {
+            manager->fields[field_id].loaded &&
+            manager->fields[field_id].type != CRSF_COMMAND) {
             return 0;
         }
 #ifdef debug
@@ -806,7 +919,11 @@ void dynamic_field_display_value(dynamic_field_t *field, char *buffer, uint16_t 
         strncpy(buffer, ">", buffer_size - 1);
         break;
     case CRSF_COMMAND:
-        strncpy(buffer, "[Run]", buffer_size - 1);
+        if (field->value > 0 && field->value < 4 && field->options_blob[0]) {
+            snprintf(buffer, buffer_size, "%s", field->options_blob);
+        } else {
+            snprintf(buffer, buffer_size, "[%s]", field->name);
+        }
         break;
     default:
         snprintf(buffer, buffer_size, "%ld", (long)field->value);

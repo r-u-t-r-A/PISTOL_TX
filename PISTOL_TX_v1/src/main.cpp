@@ -1,4 +1,7 @@
 
+/* Define before crsf.c — it includes crsf_debug.c and crsf_dynamic.c */
+#define debug
+
 #include <Arduino.h>
 //#include <LiquidCrystal_I2C.h>
 #include <HardwareTimer.h>
@@ -15,7 +18,6 @@
 #include "oled_text.c"
 #include "handset_menu.h"
 #include "handset_menu.c"
-//#define debug
 
 //U8G2_SSD1315_128X64_NONAME_1_HW_I2C oled(U8G2_R0);
 U8X8_SSD1315_128X64_NONAME_HW_I2C oled(U8X8_PIN_NONE, PB6, PB7);
@@ -215,7 +217,18 @@ void handle_menu_navigation(ENUM_BUTTON btn) {
             oled.clearDisplay();
             draw_dynamic_menu();
         } else if (field->type == CRSF_COMMAND) {
-            dynamic_param_send_value(ADDR_MODULE, field);
+            if (field->value == 2) {
+                return;
+            }
+            if (field->value == 1 && dynamic_command_popup_active()) {
+                return;
+            }
+            uint8_t cmd_byte = dynamic_param_command_tx_byte(field);
+            if (cmd_byte != 0) {
+                dynamic_param_send_value(ADDR_MODULE, field);
+                oled.clearDisplay();
+                draw_dynamic_menu();
+            }
         } else if (!field->grey && field->type <= CRSF_TEXT_SELECTION) {
             menu_state.edit_mode = 1;
             menu_state.edit_value = field->value;
@@ -224,6 +237,17 @@ void handle_menu_navigation(ENUM_BUTTON btn) {
             draw_dynamic_menu();
         }
     } else if (btn == BACK) {
+        if (dynamic_command_popup_active()) {
+            dynamic_field_t *cmd_field = dynamic_get_field_by_id(
+                &param_manager, dynamic_command_popup_field_id());
+            if (cmd_field && cmd_field->value == 2) {
+                dynamic_param_send_command(ADDR_MODULE, cmd_field->id, CRSF_CMD_STATUS_CANCEL);
+                dynamic_command_popup_clear();
+                oled.clearDisplay();
+                draw_dynamic_menu();
+                return;
+            }
+        }
         if (menu_state.current_folder != DYNAMIC_ROOT_FOLDER) {
             dynamic_field_t *folder = dynamic_get_field_by_id(&param_manager, menu_state.current_folder);
             menu_state.current_folder = folder ? folder->parent : DYNAMIC_ROOT_FOLDER;
@@ -427,8 +451,6 @@ ENUM_BUTTON getButtonV6() {
 }
 
 void draw_dynamic_menu() {
-    CRSF_get_elrs_info(ADDR_MODULE);
-
     dynamic_field_t *visible_fields[20];
     uint8_t field_count = dynamic_get_visible_fields(
         &param_manager,
@@ -451,6 +473,7 @@ void draw_dynamic_menu() {
     uint8_t start_idx = menu_state.page_offset;
     const uint8_t has_scroll_up = (start_idx > 0) ? 1 : 0;
     const uint8_t has_scroll_down = ((start_idx + display_lines) < field_count) ? 1 : 0;
+    const char *cmd_status = NULL;
 
     for (uint8_t i = 0; i < display_lines && (start_idx + i) < field_count; i++) {
         uint8_t field_idx = start_idx + i;
@@ -480,15 +503,22 @@ void draw_dynamic_menu() {
           */
             oled.setCursor(0, i);
             oled.print(chop_chars(value_str, left_chars));
-           // oled.setCursor(left_chars * OLED_CHAR_WIDTH_PX, i);
-            //oled.print(stats);
+        } else if (field->type == CRSF_COMMAND) {
+            snprintf(line, sizeof(line), "[%s]", field->name);
+            oled.setCursor(0, i);
+            oled.print(chop_chars(line, max_chars));
+            if (field->value == 2 && field->options_blob[0]) {
+                cmd_status = field->options_blob;
+            } else if (field->value == 3) {
+                cmd_status = "OK=confirm";
+            }
         } else {
             if (dynamic_field_compact_display(field)) {
                 strncpy(line, value_str, sizeof(line) - 1);
             } else if (field->type == CRSF_FOLDER) {
                 snprintf(line, sizeof(line), ">%s", field->name);
             } else if (field->type == CRSF_TEXT_SELECTION) {
-                strncpy(line, value_str, sizeof(line) - 1);
+                snprintf(line, sizeof(line), "%s %s", field->name, value_str);
             } else {
                 strncpy(line, field->name, sizeof(line) - 1);
             }
@@ -508,6 +538,11 @@ void draw_dynamic_menu() {
     if ((start_idx + display_lines) < field_count) {
         oled.setCursor(127, 7);
         oled.print("v");
+    }
+    if (cmd_status) {
+        uint8_t status_row = (field_count <= 6 && !has_scroll_down) ? 7 : 6;
+        oled.setCursor(0, status_row);
+        oled.print(chop_chars(cmd_status, OLED_ROW_CHARS - (status_row == 7 && has_scroll_down)));
     }
 }
 
@@ -798,6 +833,7 @@ void loop() {
 
     if (menu_initialized && isInLowerLevel) {
       uint8_t blink_redraw = 0;
+      uint8_t menu_redraw = 0;
       if (main_menu_pos == SCREEN_ELRS && menu_state.edit_mode) {
         blink_redraw = menu_blink_tick(currentMillis);
       } else if (main_menu_pos == SCREEN_TRIM && handset_trim_edit_mode()) {
@@ -805,7 +841,15 @@ void loop() {
       } else if (main_menu_pos == SCREEN_MAIN && handset_main_edit_mode()) {
         blink_redraw = menu_blink_tick(currentMillis);
       }
-      if (blink_redraw) {
+      if (main_menu_pos == SCREEN_ELRS) {
+        if (dynamic_command_popup_tick(currentMillis, ADDR_MODULE)) {
+          menu_redraw = 1;
+        }
+        if (dynamic_menu_take_dirty()) {
+          menu_redraw = 1;
+        }
+      }
+      if (blink_redraw || menu_redraw) {
         oled.clearDisplay();
         if (main_menu_pos == SCREEN_ELRS) {
           draw_dynamic_menu();

@@ -663,9 +663,39 @@ static uint8_t param_value_size(const dynamic_field_t *field)
   }
 }
 
+void dynamic_param_send_command(uint8_t device_id, uint8_t field_id, uint8_t status_byte)
+{
+  (void)device_id;
+  uint8_t packet[8];
+  buildElrsPacket(packet, field_id, status_byte);
+
+#ifdef debug
+  CRSF_DBG("TX 2D cmd id=%u status=%u\n", field_id, status_byte);
+  crsf_dbg_hex("  pkt", packet, 8, 8);
+#endif
+
+  crsf_rc_timer_pause();
+  CRSF_write(packet, 8, 0);
+  delay(4);
+  crsf_rc_timer_resume();
+}
+
 void dynamic_param_send_value(uint8_t device_id, dynamic_field_t *field)
 {
   if (!field || field->type == CRSF_FOLDER || field->type == CRSF_INFO) {
+    return;
+  }
+
+  if (field->type == CRSF_COMMAND) {
+    uint8_t status_byte = dynamic_param_command_tx_byte(field);
+    if (status_byte == 0) {
+      return;
+    }
+    dynamic_param_send_command(device_id, field->id, status_byte);
+    if (status_byte == CRSF_CMD_STATUS_START) {
+      field->value = CRSF_CMD_STATUS_START;
+      dynamic_command_popup_start(field->id, field->maxlen);
+    }
     return;
   }
 
