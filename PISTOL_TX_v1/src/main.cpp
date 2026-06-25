@@ -101,6 +101,16 @@ dynamic_menu_state_t menu_state = {0};
 
 void draw_dynamic_menu(void);
 
+static const char *rx_wifi_block_reason(void) {
+    if (LinkStatistics.uplink_Link_quality < 5) {
+        return "No link";
+    }
+    if (digitalRead(AUX1)) {
+        return "Disarm!";
+    }
+    return NULL;
+}
+
 // Define max capacity for your handset
 #define MAX_PARAMETERS 100
 //int currentMenuPos = 0;
@@ -225,6 +235,15 @@ void handle_menu_navigation(ENUM_BUTTON btn) {
             }
             uint8_t cmd_byte = dynamic_param_command_tx_byte(field);
             if (cmd_byte != 0) {
+                if (strncmp(field->name, "Enable Rx WiFi", sizeof(field->name)) == 0) {
+                    const char *block = rx_wifi_block_reason();
+                    if (block) {
+                        dynamic_command_popup_show_notice(block, 3000);
+                        oled.clearDisplay();
+                        draw_dynamic_menu();
+                        return;
+                    }
+                }
                 dynamic_param_send_value(ADDR_MODULE, field);
                 oled.clearDisplay();
                 draw_dynamic_menu();
@@ -539,6 +558,9 @@ void draw_dynamic_menu() {
         oled.setCursor(127, 7);
         oled.print("v");
     }
+    if (!cmd_status) {
+        cmd_status = dynamic_command_popup_banner();
+    }
     if (cmd_status) {
         uint8_t status_row = (field_count <= 6 && !has_scroll_down) ? 7 : 6;
         oled.setCursor(0, status_row);
@@ -845,7 +867,7 @@ void loop() {
         if (dynamic_command_popup_tick(currentMillis, ADDR_MODULE)) {
           menu_redraw = 1;
         }
-        if (dynamic_menu_take_dirty()) {
+        if (dynamic_menu_take_dirty() || dynamic_command_popup_banner()) {
           menu_redraw = 1;
         }
       }

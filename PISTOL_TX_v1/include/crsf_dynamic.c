@@ -153,11 +153,58 @@ typedef struct {
     uint8_t field_id;
     uint32_t next_poll_ms;
     uint8_t active;
+    char banner[20];
+    uint32_t banner_until_ms;
 } dynamic_command_popup_t;
 
 static dynamic_command_popup_t cmd_popup;
 
 extern void dynamic_param_send_command(uint8_t device_id, uint8_t field_id, uint8_t status_byte);
+
+static uint32_t command_poll_interval_ms(const dynamic_field_t *field) {
+    return field && field->maxlen ? (uint32_t)field->maxlen * 10UL : 2000UL;
+}
+
+static void dynamic_command_popup_on_update(dynamic_field_t *field, uint8_t prev_status) {
+    if (!cmd_popup.active || !field || field->id != cmd_popup.field_id) {
+        return;
+    }
+
+    cmd_popup.next_poll_ms = millis() + command_poll_interval_ms(field);
+
+    if (field->value == 2 && field->options_blob[0]) {
+        strncpy(cmd_popup.banner, field->options_blob, sizeof(cmd_popup.banner) - 1);
+        cmd_popup.banner[sizeof(cmd_popup.banner) - 1] = 0;
+        cmd_popup.banner_until_ms = millis() + 5000;
+    } else if (field->value == 0 && prev_status == 2) {
+        strncpy(cmd_popup.banner, field->options_blob[0] ? field->options_blob : "Stopped",
+                sizeof(cmd_popup.banner) - 1);
+        cmd_popup.banner[sizeof(cmd_popup.banner) - 1] = 0;
+        cmd_popup.banner_until_ms = millis() + 3000;
+    }
+
+    dynamic_menu_dirty = 1;
+}
+
+const char *dynamic_command_popup_banner(void) {
+    if (!cmd_popup.banner[0]) {
+        return NULL;
+    }
+    if (millis() >= cmd_popup.banner_until_ms) {
+        return NULL;
+    }
+    return cmd_popup.banner;
+}
+
+void dynamic_command_popup_show_notice(const char *text, uint32_t duration_ms) {
+    if (!text || !text[0]) {
+        return;
+    }
+    strncpy(cmd_popup.banner, text, sizeof(cmd_popup.banner) - 1);
+    cmd_popup.banner[sizeof(cmd_popup.banner) - 1] = 0;
+    cmd_popup.banner_until_ms = millis() + duration_ms;
+    dynamic_menu_dirty = 1;
+}
 
 uint8_t dynamic_menu_take_dirty(void) {
     if (!dynamic_menu_dirty) {
@@ -170,12 +217,16 @@ uint8_t dynamic_menu_take_dirty(void) {
 void dynamic_command_popup_start(uint8_t field_id, uint8_t timeout_units) {
     cmd_popup.field_id = field_id;
     cmd_popup.active = 1;
-    cmd_popup.next_poll_ms = millis() + (timeout_units ? (uint32_t)timeout_units * 10UL : 100UL);
+    cmd_popup.banner[0] = 0;
+    cmd_popup.banner_until_ms = 0;
+    cmd_popup.next_poll_ms = millis() + (timeout_units ? (uint32_t)timeout_units * 10UL : 2000UL);
 }
 
 void dynamic_command_popup_clear(void) {
     cmd_popup.active = 0;
     cmd_popup.field_id = 0;
+    cmd_popup.banner[0] = 0;
+    cmd_popup.banner_until_ms = 0;
 }
 
 uint8_t dynamic_command_popup_active(void) {
@@ -198,6 +249,9 @@ uint8_t dynamic_command_popup_tick(unsigned long now, uint8_t device_id) {
     }
 
     if (field->value == 0) {
+        if (dynamic_command_popup_banner()) {
+            return 0;
+        }
         dynamic_command_popup_clear();
         return 1;
     }
@@ -206,9 +260,9 @@ uint8_t dynamic_command_popup_tick(unsigned long now, uint8_t device_id) {
         return 0;
     }
 
-    if (now >= cmd_popup.next_poll_ms) {
+    if ((field->value == 1 || field->value == 2) && now >= cmd_popup.next_poll_ms) {
         dynamic_param_send_command(device_id, cmd_popup.field_id, CRSF_CMD_STATUS_QUERY);
-        cmd_popup.next_poll_ms = now + (field->maxlen ? (uint32_t)field->maxlen * 10UL : 100UL);
+        cmd_popup.next_poll_ms = now + command_poll_interval_ms(field);
     }
 
     return 0;
@@ -443,6 +497,8 @@ static void field_command_load(dynamic_field_t *field, const uint8_t *data,
         return;
     }
     uint8_t new_status = data[offset];
+    uint8_t prev_status = (uint8_t)field->value;
+
     if (cmd_popup.active && field->id == cmd_popup.field_id
         && new_status == 0 && field->value == CRSF_CMD_STATUS_START) {
         if (offset + 1 < len) {
@@ -450,12 +506,17 @@ static void field_command_load(dynamic_field_t *field, const uint8_t *data,
         }
         return;
     }
+
     field->value = new_status;
     if (offset + 1 < len) {
         field->maxlen = data[offset + 1];
         offset += 2;
         extract_cstring(data, offset, len, field->options_blob,
                         sizeof(field->options_blob));
+    }
+
+    if (cmd_popup.active && field->id == cmd_popup.field_id) {
+        dynamic_command_popup_on_update(field, prev_status);
     }
 }
 
