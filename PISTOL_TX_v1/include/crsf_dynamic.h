@@ -108,6 +108,7 @@ uint8_t dynamic_command_popup_active(void);
 uint8_t dynamic_command_popup_field_id(void);
 uint8_t dynamic_command_popup_tick(unsigned long now, uint8_t device_id);
 const char *dynamic_command_popup_banner(void);
+uint8_t dynamic_command_popup_banner_take_edge(void);
 void dynamic_command_popup_show_notice(const char *text, uint32_t duration_ms);
 
 extern uint8_t dynamic_menu_dirty;

@@ -172,18 +172,28 @@ static void dynamic_command_popup_on_update(dynamic_field_t *field, uint8_t prev
 
     cmd_popup.next_poll_ms = millis() + command_poll_interval_ms(field);
 
+    uint8_t need_dirty = (field->value != prev_status) ? 1 : 0;
+
     if (field->value == 2 && field->options_blob[0]) {
-        strncpy(cmd_popup.banner, field->options_blob, sizeof(cmd_popup.banner) - 1);
-        cmd_popup.banner[sizeof(cmd_popup.banner) - 1] = 0;
-        cmd_popup.banner_until_ms = millis() + 5000;
+        if (strncmp(cmd_popup.banner, field->options_blob, sizeof(cmd_popup.banner)) != 0) {
+            strncpy(cmd_popup.banner, field->options_blob, sizeof(cmd_popup.banner) - 1);
+            cmd_popup.banner[sizeof(cmd_popup.banner) - 1] = 0;
+            cmd_popup.banner_until_ms = millis() + 5000;
+            need_dirty = 1;
+        }
     } else if (field->value == 0 && prev_status == 2) {
-        strncpy(cmd_popup.banner, field->options_blob[0] ? field->options_blob : "Stopped",
-                sizeof(cmd_popup.banner) - 1);
-        cmd_popup.banner[sizeof(cmd_popup.banner) - 1] = 0;
-        cmd_popup.banner_until_ms = millis() + 3000;
+        const char *text = field->options_blob[0] ? field->options_blob : "Stopped";
+        if (strncmp(cmd_popup.banner, text, sizeof(cmd_popup.banner)) != 0) {
+            strncpy(cmd_popup.banner, text, sizeof(cmd_popup.banner) - 1);
+            cmd_popup.banner[sizeof(cmd_popup.banner) - 1] = 0;
+            cmd_popup.banner_until_ms = millis() + 3000;
+            need_dirty = 1;
+        }
     }
 
-    dynamic_menu_dirty = 1;
+    if (need_dirty) {
+        dynamic_menu_dirty = 1;
+    }
 }
 
 const char *dynamic_command_popup_banner(void) {
@@ -194,6 +204,16 @@ const char *dynamic_command_popup_banner(void) {
         return NULL;
     }
     return cmd_popup.banner;
+}
+
+uint8_t dynamic_command_popup_banner_take_edge(void) {
+    static uint8_t was_visible;
+    uint8_t now_visible = dynamic_command_popup_banner() ? 1 : 0;
+    if (now_visible == was_visible) {
+        return 0;
+    }
+    was_visible = now_visible;
+    return 1;
 }
 
 void dynamic_command_popup_show_notice(const char *text, uint32_t duration_ms) {
@@ -517,6 +537,8 @@ static void field_command_load(dynamic_field_t *field, const uint8_t *data,
 
     if (cmd_popup.active && field->id == cmd_popup.field_id) {
         dynamic_command_popup_on_update(field, prev_status);
+    } else if (new_status != prev_status) {
+        dynamic_menu_dirty = 1;
     }
 }
 
@@ -566,7 +588,6 @@ static uint8_t parse_field_payload(dynamic_param_manager_t *manager, uint8_t fie
         if (field->type == CRSF_COMMAND) {
             uint16_t cmd_offset = extract_cstring(data, 2, len, field->name, sizeof(field->name));
             field_command_load(field, data, cmd_offset, len);
-            dynamic_menu_dirty = 1;
             return 1;
         }
         return 1;

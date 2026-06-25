@@ -1,6 +1,6 @@
 
 /* Define before crsf.c — it includes crsf_debug.c and crsf_dynamic.c */
-#define debug
+//#define debug
 
 #include <Arduino.h>
 //#include <LiquidCrystal_I2C.h>
@@ -867,7 +867,7 @@ void loop() {
         if (dynamic_command_popup_tick(currentMillis, ADDR_MODULE)) {
           menu_redraw = 1;
         }
-        if (dynamic_menu_take_dirty() || dynamic_command_popup_banner()) {
+        if (dynamic_menu_take_dirty() || dynamic_command_popup_banner_take_edge()) {
           menu_redraw = 1;
         }
       }
